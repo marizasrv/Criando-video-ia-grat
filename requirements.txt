@@ -1,6 +1,6 @@
 streamlit
-moviepy
-imageio
+moviepy>=2.0.0
 imageio-ffmpeg
-pillow
 numpy
+Pillow
+edge-tts
