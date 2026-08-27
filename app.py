@@ -1,613 +1,361 @@
-import streamlit as st
 import os
+import asyncio
 import tempfile
-from pathlib import Path
 
+import streamlit as st
 from moviepy import (
     ImageClip,
     AudioFileClip,
+    CompositeVideoClip,
     concatenate_videoclips,
-    concatenate_audioclips,
-    CompositeAudioClip,
 )
+from PIL import Image
+import numpy as np
+import edge_tts
 
-# ==========================================
-# CONFIGURAÇÃO
-# ==========================================
+
+# =========================================================
+# CONFIGURACAO DO APP
+# =========================================================
 
 st.set_page_config(
-    page_title="Montador de Vídeo IA",
+    page_title="Criador de Video",
     page_icon="🎬",
-    layout="centered"
+    layout="centered",
 )
 
-st.title("🎬 Montador de Vídeo com Imagens e Som")
-
+st.title("🎬 Criador de vídeo")
 st.write(
-    "Envie suas imagens e os áudios das falas. "
-    "O app monta as cenas e cria um vídeo MP4."
+    "Envie as imagens das cenas e escolha a voz da narradora. "
+    "O app cria um MP4 1280×720 com narração."
 )
 
 
-# ==========================================
-# FORMATO DO VÍDEO
-# ==========================================
+# =========================================================
+# VOZES
+# =========================================================
 
-formato = st.selectbox(
-    "Formato do vídeo",
-    [
-        "YouTube Horizontal 16:9",
-        "YouTube Shorts / TikTok 9:16"
-    ]
-)
-
-if formato == "YouTube Horizontal 16:9":
-    largura = 1280
-    altura = 720
-else:
-    largura = 720
-    altura = 1280
-
-
-# ==========================================
-# UPLOAD DAS IMAGENS
-# ==========================================
-
-imagens = st.file_uploader(
-    "📷 Envie as imagens das cenas",
-    type=[
-        "png",
-        "jpg",
-        "jpeg",
-        "webp"
-    ],
-    accept_multiple_files=True
-)
-
-
-# ==========================================
-# UPLOAD DOS ÁUDIOS
-# ==========================================
-
-audios = st.file_uploader(
-    "🎤 Envie as falas/áudios das cenas",
-    type=[
-        "mp3",
-        "wav",
-        "m4a",
-        "aac"
-    ],
-    accept_multiple_files=True
-)
+VOZES = {
+    "👩 Feminina suave": {
+        "voice": "pt-BR-FranciscaNeural",
+        "rate": "-10%",
+        "pitch": "+0Hz",
+    },
+    "👧 Feminina mais infantil": {
+        "voice": "pt-BR-FranciscaNeural",
+        "rate": "+5%",
+        "pitch": "+15Hz",
+    },
+    "👩 Feminina adulta": {
+        "voice": "pt-BR-FranciscaNeural",
+        "rate": "-2%",
+        "pitch": "-5Hz",
+    },
+    "👨 Masculina": {
+        "voice": "pt-BR-AntonioNeural",
+        "rate": "-5%",
+        "pitch": "+0Hz",
+    },
+    "🌙 Conto calmo": {
+        "voice": "pt-BR-FranciscaNeural",
+        "rate": "-20%",
+        "pitch": "-2Hz",
+    },
+    "🕯️ Dramática / sombria": {
+        "voice": "pt-BR-FranciscaNeural",
+        "rate": "-12%",
+        "pitch": "-8Hz",
+    },
+}
 
 
-# ==========================================
-# MÚSICA DE FUNDO
-# ==========================================
-
-musica = st.file_uploader(
-    "🎵 Música de fundo (opcional)",
-    type=[
-        "mp3",
-        "wav",
-        "m4a",
-        "aac"
-    ]
-)
-
-volume_musica = st.slider(
-    "🔊 Volume da música de fundo",
-    min_value=0,
-    max_value=100,
-    value=15
-)
+async def gerar_narracao_async(texto, caminho_saida, voice, rate, pitch):
+    comunicador = edge_tts.Communicate(
+        text=texto,
+        voice=voice,
+        rate=rate,
+        pitch=pitch,
+    )
+    await comunicador.save(caminho_saida)
 
 
-# ==========================================
-# DURAÇÃO SEM ÁUDIO
-# ==========================================
-
-duracao_sem_audio = st.slider(
-    "⏱️ Duração da imagem quando não houver fala",
-    min_value=2,
-    max_value=15,
-    value=5
-)
-
-
-st.info(
-    "💡 Para manter tudo na ordem, use nomes como: "
-    "01.jpg + 01.mp3, "
-    "02.jpg + 02.mp3, "
-    "03.jpg + 03.mp3."
-)
-
-
-# ==========================================
-# ORDENAR ARQUIVOS
-# ==========================================
-
-def ordenar_arquivos(arquivos):
-
-    if not arquivos:
-        return []
-
-    return sorted(
-        arquivos,
-        key=lambda arquivo: arquivo.name.lower()
+def gerar_narracao(texto, caminho_saida, voice, rate, pitch):
+    asyncio.run(
+        gerar_narracao_async(
+            texto=texto,
+            caminho_saida=caminho_saida,
+            voice=voice,
+            rate=rate,
+            pitch=pitch,
+        )
     )
 
 
-# ==========================================
-# AJUSTAR IMAGEM
-# ==========================================
+# =========================================================
+# IMAGEM 16:9
+# =========================================================
 
-def ajustar_imagem(
-    clip,
-    largura,
-    altura
-):
+def preparar_imagem(imagem, largura=1280, altura=720):
+    """
+    Ajusta uma imagem PIL para preencher 1280x720 sem faixas brancas.
+    """
+    img = imagem.convert("RGB")
 
+    proporcao_img = img.width / img.height
     proporcao_video = largura / altura
-    proporcao_imagem = clip.w / clip.h
 
-    if proporcao_imagem > proporcao_video:
-
-        clip = clip.resized(
-            height=altura
-        )
-
+    if proporcao_img > proporcao_video:
+        nova_altura = altura
+        nova_largura = round(img.width * altura / img.height)
     else:
+        nova_largura = largura
+        nova_altura = round(img.height * largura / img.width)
 
-        clip = clip.resized(
-            width=largura
+    img = img.resize(
+        (nova_largura, nova_altura),
+        Image.Resampling.LANCZOS,
+    )
+
+    esquerda = max(0, (nova_largura - largura) // 2)
+    topo = max(0, (nova_altura - altura) // 2)
+
+    img = img.crop(
+        (
+            esquerda,
+            topo,
+            esquerda + largura,
+            topo + altura,
         )
-
-    x1 = max(
-        0,
-        (clip.w - largura) / 2
     )
 
-    y1 = max(
-        0,
-        (clip.h - altura) / 2
-    )
-
-    clip = clip.cropped(
-        x1=x1,
-        y1=y1,
-        width=largura,
-        height=altura
-    )
-
-    return clip
+    return np.array(img)
 
 
-# ==========================================
-# CRIAR VÍDEO
-# ==========================================
+def criar_clip_com_zoom(frame, duracao, largura=1280, altura=720):
+    """
+    Cria um zoom suave mantendo o quadro em 1280x720.
+    """
+    base = ImageClip(frame).with_duration(duracao)
 
-if st.button(
-    "🎬 CRIAR VÍDEO",
-    type="primary",
-    use_container_width=True
+    zoom = base.resized(
+        lambda t: 1.0 + 0.05 * (t / max(duracao, 0.001))
+    ).with_position(("center", "center"))
+
+    return CompositeVideoClip(
+        [zoom],
+        size=(largura, altura),
+    ).with_duration(duracao)
+
+
+# =========================================================
+# CRIAR VIDEO
+# =========================================================
+
+def criar_video(
+    imagens,
+    arquivo_audio=None,
+    duracao_cena=5,
+    arquivo_saida="video_final.mp4",
 ):
-
     if not imagens:
+        raise ValueError("Nenhuma imagem foi enviada.")
 
-        st.error(
-            "❌ Envie pelo menos uma imagem."
-        )
+    clips = []
 
-        st.stop()
+    for imagem in imagens:
+        frame = preparar_imagem(imagem)
+        clip = criar_clip_com_zoom(frame, duracao_cena)
+        clips.append(clip)
 
-
-    # ======================================
-    # PASTA TEMPORÁRIA
-    # ======================================
-
-    temp_dir = tempfile.mkdtemp()
-
+    video = concatenate_videoclips(clips, method="compose")
+    audio = None
 
     try:
+        if arquivo_audio and os.path.exists(arquivo_audio):
+            audio = AudioFileClip(arquivo_audio)
 
-        # ==================================
-        # ORDENAR
-        # ==================================
+            # Ajusta o vídeo ao tamanho do áudio
+            if audio.duration < video.duration:
+                video = video.subclipped(0, audio.duration)
 
-        imagens_ordenadas = ordenar_arquivos(
-            imagens
-        )
+            if audio.duration > video.duration:
+                audio = audio.subclipped(0, video.duration)
 
-        audios_ordenados = ordenar_arquivos(
-            audios
-        )
-
-
-        # ==================================
-        # SALVAR IMAGENS
-        # ==================================
-
-        caminhos_imagens = []
-
-        for i, arquivo in enumerate(
-            imagens_ordenadas
-        ):
-
-            extensao = Path(
-                arquivo.name
-            ).suffix.lower()
-
-            caminho = os.path.join(
-                temp_dir,
-                f"imagem_{i:03d}{extensao}"
-            )
-
-            with open(
-                caminho,
-                "wb"
-            ) as f:
-
-                f.write(
-                    arquivo.getbuffer()
-                )
-
-            caminhos_imagens.append(
-                caminho
-            )
-
-
-        # ==================================
-        # SALVAR ÁUDIOS
-        # ==================================
-
-        caminhos_audios = []
-
-        for i, arquivo in enumerate(
-            audios_ordenados
-        ):
-
-            extensao = Path(
-                arquivo.name
-            ).suffix.lower()
-
-            caminho = os.path.join(
-                temp_dir,
-                f"audio_{i:03d}{extensao}"
-            )
-
-            with open(
-                caminho,
-                "wb"
-            ) as f:
-
-                f.write(
-                    arquivo.getbuffer()
-                )
-
-            caminhos_audios.append(
-                caminho
-            )
-
-
-        # ==================================
-        # MONTAGEM
-        # ==================================
-
-        st.write(
-            "⏳ Montando as cenas..."
-        )
-
-        progresso = st.progress(0)
-
-        clips = []
-
-        total = len(
-            caminhos_imagens
-        )
-
-
-        # ==================================
-        # CRIAR CENAS
-        # ==================================
-
-        for i, caminho_imagem in enumerate(
-            caminhos_imagens
-        ):
-
-            audio_clip = None
-
-
-            # ==============================
-            # ÁUDIO DA CENA
-            # ==============================
-
-            if i < len(
-                caminhos_audios
-            ):
-
-                audio_clip = AudioFileClip(
-                    caminhos_audios[i]
-                )
-
-                duracao = (
-                    audio_clip.duration
-                    + 0.3
-                )
-
-            else:
-
-                duracao = (
-                    duracao_sem_audio
-                )
-
-
-            # ==============================
-            # IMAGEM
-            # ==============================
-
-            imagem_clip = ImageClip(
-                caminho_imagem
-            )
-
-            imagem_clip = (
-                imagem_clip
-                .with_duration(
-                    duracao
-                )
-            )
-
-            imagem_clip = ajustar_imagem(
-                imagem_clip,
-                largura,
-                altura
-            )
-
-
-            # ==============================
-            # COLOCAR VOZ NA IMAGEM
-            # ==============================
-
-            if audio_clip is not None:
-
-                imagem_clip = (
-                    imagem_clip
-                    .with_audio(
-                        audio_clip
-                    )
-                )
-
-
-            clips.append(
-                imagem_clip
-            )
-
-
-            porcentagem = int(
-                ((i + 1) / total)
-                * 70
-            )
-
-            progresso.progress(
-                porcentagem
-            )
-
-
-        # ==================================
-        # JUNTAR TODAS AS CENAS
-        # ==================================
-
-        video = concatenate_videoclips(
-            clips,
-            method="compose"
-        )
-
-        progresso.progress(75)
-
-
-        # ==================================
-        # MÚSICA DE FUNDO
-        # ==================================
-
-        musica_original = None
-        musica_final = None
-
-        if musica:
-
-            extensao = Path(
-                musica.name
-            ).suffix.lower()
-
-            caminho_musica = os.path.join(
-                temp_dir,
-                f"musica{extensao}"
-            )
-
-            with open(
-                caminho_musica,
-                "wb"
-            ) as f:
-
-                f.write(
-                    musica.getbuffer()
-                )
-
-
-            musica_original = AudioFileClip(
-                caminho_musica
-            )
-
-
-            # ==============================
-            # REPETIR MÚSICA SE NECESSÁRIO
-            # ==============================
-
-            if (
-                musica_original.duration
-                < video.duration
-            ):
-
-                repeticoes = int(
-                    video.duration
-                    / musica_original.duration
-                ) + 1
-
-                partes_musica = []
-
-                for _ in range(
-                    repeticoes
-                ):
-
-                    partes_musica.append(
-                        musica_original
-                    )
-
-
-                musica_final = (
-                    concatenate_audioclips(
-                        partes_musica
-                    )
-                )
-
-            else:
-
-                musica_final = (
-                    musica_original
-                )
-
-
-            # ==============================
-            # CORTAR NO TAMANHO DO VÍDEO
-            # ==============================
-
-            musica_final = (
-                musica_final
-                .subclipped(
-                    0,
-                    video.duration
-                )
-            )
-
-
-            # ==============================
-            # VOLUME DA MÚSICA
-            # ==============================
-
-            musica_final = (
-                musica_final
-                .with_volume_scaled(
-                    volume_musica
-                    / 100
-                )
-            )
-
-
-            # ==============================
-            # MISTURAR VOZ + MÚSICA
-            # ==============================
-
-            if video.audio is not None:
-
-                audio_final = (
-                    CompositeAudioClip(
-                        [
-                            video.audio,
-                            musica_final
-                        ]
-                    )
-                )
-
-            else:
-
-                audio_final = (
-                    musica_final
-                )
-
-
-            video = video.with_audio(
-                audio_final
-            )
-
-
-        progresso.progress(80)
-
-
-        # ==================================
-        # ARQUIVO FINAL
-        # ==================================
-
-        saida = os.path.join(
-            temp_dir,
-            "video_final.mp4"
-        )
-
-
-        st.write(
-            "🎞️ Criando o arquivo MP4..."
-        )
-
+            video = video.with_audio(audio)
 
         video.write_videofile(
-            saida,
+            arquivo_saida,
             fps=24,
             codec="libx264",
             audio_codec="aac",
             preset="medium",
             threads=2,
-            logger=None
+            logger=None,
         )
 
+        return arquivo_saida
 
-        progresso.progress(100)
+    finally:
+        if audio is not None:
+            audio.close()
 
+        for clip in clips:
+            clip.close()
 
-        # ==================================
-        # SUCESSO
-        # ==================================
-
-        st.success(
-            "✅ Vídeo criado com sucesso!"
-        )
-
-
-        # ==================================
-        # MOSTRAR VÍDEO
-        # ==================================
-
-        st.video(
-            saida
-        )
+        video.close()
 
 
-        # ==================================
-        # DOWNLOAD
-        # ==================================
+# =========================================================
+# INTERFACE
+# =========================================================
 
-        with open(
-            saida,
-            "rb"
-        ) as arquivo_video:
+arquivos_imagem = st.file_uploader(
+    "🖼️ Escolha as imagens das cenas",
+    type=["png", "jpg", "jpeg", "webp"],
+    accept_multiple_files=True,
+)
 
-            dados_video = (
-                arquivo_video.read()
+st.subheader("🎙️ Narração")
+
+modo_audio = st.radio(
+    "Como você quer a narração?",
+    ["Gerar voz no app", "Enviar áudio pronto", "Sem narração"],
+)
+
+texto_narracao = ""
+voz_escolhida = None
+arquivo_audio_enviado = None
+
+if modo_audio == "Gerar voz no app":
+    texto_narracao = st.text_area(
+        "Cole aqui o texto da narradora",
+        height=180,
+        placeholder="Era uma vez...",
+    )
+
+    voz_escolhida = st.selectbox(
+        "Escolha a voz da narradora",
+        list(VOZES.keys()),
+    )
+
+    st.caption(
+        "A voz infantil, calma e dramática usa ajustes de velocidade "
+        "e tom para mudar o estilo da narração."
+    )
+
+elif modo_audio == "Enviar áudio pronto":
+    arquivo_audio_enviado = st.file_uploader(
+        "Envie a narração",
+        type=["mp3", "wav", "m4a", "aac"],
+    )
+
+duracao_cena = st.slider(
+    "⏱️ Duração de cada cena",
+    min_value=2,
+    max_value=15,
+    value=5,
+    step=1,
+)
+
+if arquivos_imagem:
+    st.write(f"✅ {len(arquivos_imagem)} imagem(ns) selecionada(s).")
+
+    with st.expander("Ver imagens"):
+        for i, arquivo in enumerate(arquivos_imagem, start=1):
+            st.image(
+                arquivo,
+                caption=f"Cena {i}",
+                use_container_width=True,
             )
 
 
+if st.button("🎬 Criar vídeo final", type="primary"):
+    if not arquivos_imagem:
+        st.warning("Envie pelo menos uma imagem.")
+        st.stop()
+
+    if modo_audio == "Gerar voz no app" and not texto_narracao.strip():
+        st.warning("Digite o texto da narração.")
+        st.stop()
+
+    imagens = []
+
+    for arquivo in arquivos_imagem:
+        arquivo.seek(0)
+        imagens.append(Image.open(arquivo).copy())
+
+    caminho_audio = None
+    temp_audio = None
+    caminho_video = None
+
+    try:
+        if modo_audio == "Gerar voz no app":
+            temp_audio = tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".mp3",
+            )
+            temp_audio.close()
+
+            config_voz = VOZES[voz_escolhida]
+
+            with st.spinner("Gerando a voz da narradora..."):
+                gerar_narracao(
+                    texto=texto_narracao.strip(),
+                    caminho_saida=temp_audio.name,
+                    voice=config_voz["voice"],
+                    rate=config_voz["rate"],
+                    pitch=config_voz["pitch"],
+                )
+
+            caminho_audio = temp_audio.name
+
+        elif modo_audio == "Enviar áudio pronto" and arquivo_audio_enviado:
+            extensao = os.path.splitext(
+                arquivo_audio_enviado.name
+            )[1] or ".mp3"
+
+            temp_audio = tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=extensao,
+            )
+            temp_audio.write(arquivo_audio_enviado.getbuffer())
+            temp_audio.close()
+
+            caminho_audio = temp_audio.name
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".mp4",
+        ) as temp_video:
+            caminho_video = temp_video.name
+
+        with st.spinner("Montando o vídeo..."):
+            criar_video(
+                imagens=imagens,
+                arquivo_audio=caminho_audio,
+                duracao_cena=duracao_cena,
+                arquivo_saida=caminho_video,
+            )
+
+        with open(caminho_video, "rb") as f:
+            video_bytes = f.read()
+
+        st.success("✅ Vídeo criado com sucesso!")
+        st.video(video_bytes)
+
         st.download_button(
-            label="⬇️ BAIXAR VÍDEO MP4",
-            data=dados_video,
+            "⬇️ Baixar vídeo MP4",
+            data=video_bytes,
             file_name="video_final.mp4",
             mime="video/mp4",
-            use_container_width=True
         )
-
 
     except Exception as erro:
+        st.error(f"Não foi possível criar o vídeo: {erro}")
 
-        st.error(
-            "❌ Não foi possível criar o vídeo."
-        )
+    finally:
+        if temp_audio is not None and os.path.exists(temp_audio.name):
+            os.remove(temp_audio.name)
 
-        st.exception(
-            erro
-        )
+        if caminho_video and os.path.exists(caminho_video):
+            os.remove(caminho_video)
